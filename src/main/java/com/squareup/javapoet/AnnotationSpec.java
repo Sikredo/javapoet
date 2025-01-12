@@ -15,142 +15,49 @@
  */
 package com.squareup.javapoet;
 
+import com.squareup.javapoet.codewriter.CodeWriter;
+
 import java.io.IOException;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Array;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.element.AnnotationValue;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.SimpleAnnotationValueVisitor8;
 
-import static com.squareup.javapoet.Util.characterLiteralWithoutSingleQuotes;
 import static com.squareup.javapoet.Util.checkArgument;
 import static com.squareup.javapoet.Util.checkNotNull;
 
 /** A generated annotation on a declaration. */
 public final class AnnotationSpec {
   public static final String VALUE = "value";
+  private final AnnotationFormatter formatter;
 
-  public final TypeName type;
+  public final TypeNameProvider type;
   public final Map<String, List<CodeBlock>> members;
 
   private AnnotationSpec(Builder builder) {
     this.type = builder.type;
-    this.members = Util.immutableMultimap(builder.members);
+    this.members = builder.members;
+    this.formatter = builder.formatter != null
+            ? builder.formatter
+            : new DefaultAnnotationFormatter();
   }
 
-  void emit(CodeWriter codeWriter, boolean inline) throws IOException {
-    String whitespace = inline ? "" : "\n";
-    String memberSeparator = inline ? ", " : ",\n";
-    if (members.isEmpty()) {
-      // @Singleton
-      codeWriter.emit("@$T", type);
-    } else if (members.size() == 1 && members.containsKey("value")) {
-      // @Named("foo")
-      codeWriter.emit("@$T(", type);
-      emitAnnotationValues(codeWriter, whitespace, memberSeparator, members.get("value"));
-      codeWriter.emit(")");
-    } else {
-      // Inline:
-      //   @Column(name = "updated_at", nullable = false)
-      //
-      // Not inline:
-      //   @Column(
-      //       name = "updated_at",
-      //       nullable = false
-      //   )
-      codeWriter.emit("@$T(" + whitespace, type);
-      codeWriter.indent(2);
-      for (Iterator<Map.Entry<String, List<CodeBlock>>> i
-          = members.entrySet().iterator(); i.hasNext(); ) {
-        Map.Entry<String, List<CodeBlock>> entry = i.next();
-        codeWriter.emit("$L = ", entry.getKey());
-        emitAnnotationValues(codeWriter, whitespace, memberSeparator, entry.getValue());
-        if (i.hasNext()) codeWriter.emit(memberSeparator);
-      }
-      codeWriter.unindent(2);
-      codeWriter.emit(whitespace + ")");
-    }
-  }
-
-  private void emitAnnotationValues(CodeWriter codeWriter, String whitespace,
-      String memberSeparator, List<CodeBlock> values) throws IOException {
-    if (values.size() == 1) {
-      codeWriter.indent(2);
-      codeWriter.emit(values.get(0));
-      codeWriter.unindent(2);
-      return;
-    }
-
-    codeWriter.emit("{" + whitespace);
-    codeWriter.indent(2);
-    boolean first = true;
-    for (CodeBlock codeBlock : values) {
-      if (!first) codeWriter.emit(memberSeparator);
-      codeWriter.emit(codeBlock);
-      first = false;
-    }
-    codeWriter.unindent(2);
-    codeWriter.emit(whitespace + "}");
+  public void emit(CodeWriter codeWriter, boolean inline) throws IOException {
+    formatter.format(this, codeWriter, inline);
   }
 
   public static AnnotationSpec get(Annotation annotation) {
-    return get(annotation, false);
+    return AnnotationSpecConversionUtils.fromAnnotation(annotation, false);
   }
 
   public static AnnotationSpec get(Annotation annotation, boolean includeDefaultValues) {
-    Builder builder = builder(annotation.annotationType());
-    try {
-      Method[] methods = annotation.annotationType().getDeclaredMethods();
-      Arrays.sort(methods, Comparator.comparing(Method::getName));
-      for (Method method : methods) {
-        Object value = method.invoke(annotation);
-        if (!includeDefaultValues) {
-          if (Objects.deepEquals(value, method.getDefaultValue())) {
-            continue;
-          }
-        }
-        if (value.getClass().isArray()) {
-          for (int i = 0; i < Array.getLength(value); i++) {
-            builder.addMemberForValue(method.getName(), Array.get(value, i));
-          }
-          continue;
-        }
-        if (value instanceof Annotation) {
-          builder.addMember(method.getName(), "$L", get((Annotation) value));
-          continue;
-        }
-        builder.addMemberForValue(method.getName(), value);
-      }
-    } catch (Exception e) {
-      throw new RuntimeException("Reflecting " + annotation + " failed!", e);
-    }
-    return builder.build();
+    return AnnotationSpecConversionUtils.fromAnnotation(annotation, includeDefaultValues);
   }
 
   public static AnnotationSpec get(AnnotationMirror annotation) {
-    TypeElement element = (TypeElement) annotation.getAnnotationType().asElement();
-    AnnotationSpec.Builder builder = AnnotationSpec.builder(ClassName.get(element));
-    Visitor visitor = new Visitor(builder);
-    for (ExecutableElement executableElement : annotation.getElementValues().keySet()) {
-      String name = executableElement.getSimpleName().toString();
-      AnnotationValue value = annotation.getElementValues().get(executableElement);
-      value.accept(visitor, name);
-    }
-    return builder.build();
+    return AnnotationSpecConversionUtils.fromAnnotationMirror(annotation);
   }
 
   public static Builder builder(ClassName type) {
@@ -164,9 +71,8 @@ public final class AnnotationSpec {
 
   public Builder toBuilder() {
     Builder builder = new Builder(type);
-    for (Map.Entry<String, List<CodeBlock>> entry : members.entrySet()) {
-      builder.members.put(entry.getKey(), new ArrayList<>(entry.getValue()));
-    }
+    builder.memberManager = new AnnotationMemberManager(new LinkedHashMap<>(members));
+    builder.formatter(formatter);
     return builder;
   }
 
@@ -193,95 +99,38 @@ public final class AnnotationSpec {
   }
 
   public static final class Builder {
-    private final TypeName type;
+    private final TypeNameProvider type;
+    public Map<String, List<CodeBlock>> members = new LinkedHashMap<>();
+    private AnnotationFormatter formatter;
+    private AnnotationMemberManager memberManager;
 
-    public final Map<String, List<CodeBlock>> members = new LinkedHashMap<>();
-
-    private Builder(TypeName type) {
+    private Builder(TypeNameProvider type) {
       this.type = type;
+      this.memberManager = new AnnotationMemberManager(members);
     }
 
     public Builder addMember(String name, String format, Object... args) {
-      return addMember(name, CodeBlock.of(format, args));
-    }
-
-    public Builder addMember(String name, CodeBlock codeBlock) {
-      List<CodeBlock> values = members.computeIfAbsent(name, k -> new ArrayList<>());
-      values.add(codeBlock);
+      memberManager.addMember(name, format, args);
       return this;
     }
 
-    /**
-     * Delegates to {@link #addMember(String, String, Object...)}, with parameter {@code format}
-     * depending on the given {@code value} object. Falls back to {@code "$L"} literal format if
-     * the class of the given {@code value} object is not supported.
-     */
+    public Builder formatter(AnnotationFormatter formatter) {
+      this.formatter = formatter;
+      return this;
+    }
+
     Builder addMemberForValue(String memberName, Object value) {
-      checkNotNull(memberName, "memberName == null");
-      checkNotNull(value, "value == null, constant non-null value expected for %s", memberName);
-      checkArgument(SourceVersion.isName(memberName), "not a valid name: %s", memberName);
-      if (value instanceof Class<?>) {
-        return addMember(memberName, "$T.class", value);
-      }
-      if (value instanceof Enum) {
-        return addMember(memberName, "$T.$L", value.getClass(), ((Enum<?>) value).name());
-      }
-      if (value instanceof String) {
-        return addMember(memberName, "$S", value);
-      }
-      if (value instanceof Float) {
-        return addMember(memberName, "$Lf", value);
-      }
-      if (value instanceof Long) {
-        return addMember(memberName, "$LL", value);
-      }
-      if (value instanceof Character) {
-        return addMember(memberName, "'$L'", characterLiteralWithoutSingleQuotes((char) value));
-      }
-      return addMember(memberName, "$L", value);
+      memberManager.addMemberForValue(memberName, value);
+      return this;
     }
 
     public AnnotationSpec build() {
+      members = memberManager.getMembers();
       for (String name : members.keySet()) {
         checkNotNull(name, "name == null");
         checkArgument(SourceVersion.isName(name), "not a valid name: %s", name);
       }
       return new AnnotationSpec(this);
-    }
-  }
-
-  /**
-   * Annotation value visitor adding members to the given builder instance.
-   */
-  private static class Visitor extends SimpleAnnotationValueVisitor8<Builder, String> {
-    final Builder builder;
-
-    Visitor(Builder builder) {
-      super(builder);
-      this.builder = builder;
-    }
-
-    @Override protected Builder defaultAction(Object o, String name) {
-      return builder.addMemberForValue(name, o);
-    }
-
-    @Override public Builder visitAnnotation(AnnotationMirror a, String name) {
-      return builder.addMember(name, "$L", get(a));
-    }
-
-    @Override public Builder visitEnumConstant(VariableElement c, String name) {
-      return builder.addMember(name, "$T.$L", c.asType(), c.getSimpleName());
-    }
-
-    @Override public Builder visitType(TypeMirror t, String name) {
-      return builder.addMember(name, "$T.class", t);
-    }
-
-    @Override public Builder visitArray(List<? extends AnnotationValue> values, String name) {
-      for (AnnotationValue value : values) {
-        value.accept(this, name);
-      }
-      return builder;
     }
   }
 }

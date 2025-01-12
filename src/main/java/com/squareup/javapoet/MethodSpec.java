@@ -15,6 +15,8 @@
  */
 package com.squareup.javapoet;
 
+import com.squareup.javapoet.codewriter.CodeWriter;
+
 import java.io.IOException;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -41,6 +43,8 @@ import static com.squareup.javapoet.Util.checkState;
 
 /** A generated constructor or method declaration. */
 public final class MethodSpec {
+  private final TypeNameProvider typeNameProvider;
+  private static final ITypeNameStaticAdapter TYPE_NAME_STATIC_ADAPTER = new TypeNameStaticAdapter();
   static final String CONSTRUCTOR = "<init>";
 
   public final String name;
@@ -48,16 +52,15 @@ public final class MethodSpec {
   public final List<AnnotationSpec> annotations;
   public final Set<Modifier> modifiers;
   public final List<TypeVariableName> typeVariables;
-  public final TypeName returnType;
   public final List<ParameterSpec> parameters;
   public final boolean varargs;
-  public final List<TypeName> exceptions;
+  public final List<TypeNameProvider> exceptions;
   public final CodeBlock code;
   public final CodeBlock defaultValue;
 
   private MethodSpec(Builder builder) {
-    CodeBlock code = builder.code.build();
-    checkArgument(code.isEmpty() || !builder.modifiers.contains(Modifier.ABSTRACT),
+    CodeBlock block = builder.code.build();
+    checkArgument(block.isEmpty() || !builder.modifiers.contains(Modifier.ABSTRACT),
         "abstract method %s cannot have code", builder.name);
     checkArgument(!builder.varargs || lastParameterIsArray(builder.parameters),
         "last parameter of varargs method %s must be an array", builder.name);
@@ -67,21 +70,21 @@ public final class MethodSpec {
     this.annotations = Util.immutableList(builder.annotations);
     this.modifiers = Util.immutableSet(builder.modifiers);
     this.typeVariables = Util.immutableList(builder.typeVariables);
-    this.returnType = builder.returnType;
+    this.typeNameProvider = builder.returnType;
     this.parameters = Util.immutableList(builder.parameters);
     this.varargs = builder.varargs;
     this.exceptions = Util.immutableList(builder.exceptions);
     this.defaultValue = builder.defaultValue;
-    this.code = code;
+    this.code = block;
   }
 
   private boolean lastParameterIsArray(List<ParameterSpec> parameters) {
     return !parameters.isEmpty()
-        && TypeName.asArray((parameters.get(parameters.size() - 1).type)) != null;
+            && TYPE_NAME_STATIC_ADAPTER.asArray((parameters.get(parameters.size() - 1).type)) != null;
   }
 
-  void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitModifiers)
-      throws IOException {
+  private void emitMethodSignature(CodeWriter codeWriter, String enclosingName,
+                                   Set<Modifier> implicitModifiers) throws IOException {
     codeWriter.emitJavadoc(javadocWithParameters());
     codeWriter.emitAnnotations(annotations, false);
     codeWriter.emitModifiers(modifiers, implicitModifiers);
@@ -94,17 +97,10 @@ public final class MethodSpec {
     if (isConstructor()) {
       codeWriter.emit("$L($Z", enclosingName);
     } else {
-      codeWriter.emit("$T $L($Z", returnType, name);
+      codeWriter.emit("$T $L($Z", typeNameProvider, name);
     }
 
-    boolean firstParameter = true;
-    for (Iterator<ParameterSpec> i = parameters.iterator(); i.hasNext(); ) {
-      ParameterSpec parameter = i.next();
-      if (!firstParameter) codeWriter.emit(",").emitWrappingSpace();
-      parameter.emit(codeWriter, !i.hasNext() && varargs);
-      firstParameter = false;
-    }
-
+    emitParameters(codeWriter);
     codeWriter.emit(")");
 
     if (defaultValue != null && !defaultValue.isEmpty()) {
@@ -112,31 +108,49 @@ public final class MethodSpec {
       codeWriter.emit(defaultValue);
     }
 
+    emitExceptions(codeWriter);
+  }
+
+  private void emitParameters(CodeWriter codeWriter) throws IOException {
+    boolean firstParameter = true;
+    for (Iterator<ParameterSpec> i = parameters.iterator(); i.hasNext(); ) {
+      ParameterSpec parameter = i.next();
+      if (!firstParameter) codeWriter.emit(",").emitWrappingSpace();
+      parameter.emit(codeWriter, !i.hasNext() && varargs);
+      firstParameter = false;
+    }
+  }
+
+  private void emitExceptions(CodeWriter codeWriter) throws IOException {
     if (!exceptions.isEmpty()) {
       codeWriter.emitWrappingSpace().emit("throws");
       boolean firstException = true;
-      for (TypeName exception : exceptions) {
+      for (TypeNameProvider exception : exceptions) {
         if (!firstException) codeWriter.emit(",");
         codeWriter.emitWrappingSpace().emit("$T", exception);
         firstException = false;
       }
     }
+  }
 
+  private void emitMethodBody(CodeWriter codeWriter) throws IOException {
     if (hasModifier(Modifier.ABSTRACT)) {
       codeWriter.emit(";\n");
     } else if (hasModifier(Modifier.NATIVE)) {
-      // Code is allowed to support stuff like GWT JSNI.
       codeWriter.emit(code);
       codeWriter.emit(";\n");
     } else {
       codeWriter.emit(" {\n");
-
       codeWriter.indent();
       codeWriter.emit(code, true);
       codeWriter.unindent();
-
       codeWriter.emit("}\n");
     }
+  }
+
+  void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitModifiers) throws IOException {
+    emitMethodSignature(codeWriter, enclosingName, implicitModifiers);
+    emitMethodBody(codeWriter);
     codeWriter.popTypeVariables(typeVariables);
   }
 
@@ -217,7 +231,7 @@ public final class MethodSpec {
     }
 
     String methodName = method.getSimpleName().toString();
-    MethodSpec.Builder methodBuilder = MethodSpec.methodBuilder(methodName);
+    Builder methodBuilder = MethodSpec.methodBuilder(methodName);
 
     methodBuilder.addAnnotation(Override.class);
 
@@ -227,16 +241,16 @@ public final class MethodSpec {
     methodBuilder.addModifiers(modifiers);
 
     for (TypeParameterElement typeParameterElement : method.getTypeParameters()) {
-      TypeVariable var = (TypeVariable) typeParameterElement.asType();
-      methodBuilder.addTypeVariable(TypeVariableName.get(var));
+      TypeVariable typeParameterElementType = (TypeVariable) typeParameterElement.asType();
+      methodBuilder.addTypeVariable(TypeVariableName.get(typeParameterElementType));
     }
 
-    methodBuilder.returns(TypeName.get(method.getReturnType()));
+    methodBuilder.returns(TYPE_NAME_STATIC_ADAPTER.get(method.getReturnType()));
     methodBuilder.addParameters(ParameterSpec.parametersOf(method));
     methodBuilder.varargs(method.isVarArgs());
 
     for (TypeMirror thrownType : method.getThrownTypes()) {
-      methodBuilder.addException(TypeName.get(thrownType));
+      methodBuilder.addException(TYPE_NAME_STATIC_ADAPTER.get(thrownType));
     }
 
     return methodBuilder;
@@ -262,15 +276,16 @@ public final class MethodSpec {
     TypeMirror resolvedReturnType = executableType.getReturnType();
 
     Builder builder = overriding(method);
-    builder.returns(TypeName.get(resolvedReturnType));
+    builder.returns(TYPE_NAME_STATIC_ADAPTER.get(resolvedReturnType));
     for (int i = 0, size = builder.parameters.size(); i < size; i++) {
       ParameterSpec parameter = builder.parameters.get(i);
-      TypeName type = TypeName.get(resolvedParameterTypes.get(i));
-      builder.parameters.set(i, parameter.toBuilder(type, parameter.name).build());
+      TypeNameProvider typeProvider = TYPE_NAME_STATIC_ADAPTER.get(resolvedParameterTypes.get(i));
+      builder.parameters.set(i, parameter.toBuilder(
+              TYPE_NAME_STATIC_ADAPTER.toTypeName(typeProvider), parameter.name).build());
     }
     builder.exceptions.clear();
     for (int i = 0, size = resolvedThrownTypes.size(); i < size; i++) {
-      builder.addException(TypeName.get(resolvedThrownTypes.get(i)));
+      builder.addException(TYPE_NAME_STATIC_ADAPTER.get(resolvedThrownTypes.get(i)));
     }
 
     return builder;
@@ -282,7 +297,7 @@ public final class MethodSpec {
     builder.annotations.addAll(annotations);
     builder.modifiers.addAll(modifiers);
     builder.typeVariables.addAll(typeVariables);
-    builder.returnType = returnType;
+    builder.returnType = typeNameProvider;
     builder.parameters.addAll(parameters);
     builder.exceptions.addAll(exceptions);
     builder.code.add(code);
@@ -291,19 +306,17 @@ public final class MethodSpec {
     return builder;
   }
 
-  public static final class Builder {
+  public static final class Builder extends AbstractSpecBuilder<Builder, MethodSpec> {
     private String name;
 
     private final CodeBlock.Builder javadoc = CodeBlock.builder();
-    private TypeName returnType;
-    private final Set<TypeName> exceptions = new LinkedHashSet<>();
+    private TypeNameProvider returnType;
+    private final Set<TypeNameProvider> exceptions = new LinkedHashSet<>();
     private final CodeBlock.Builder code = CodeBlock.builder();
     private boolean varargs;
     private CodeBlock defaultValue;
 
     public final List<TypeVariableName> typeVariables = new ArrayList<>();
-    public final List<AnnotationSpec> annotations = new ArrayList<>();
-    public final List<Modifier> modifiers = new ArrayList<>();
     public final List<ParameterSpec> parameters = new ArrayList<>();
 
     private Builder(String name) {
@@ -315,7 +328,7 @@ public final class MethodSpec {
       checkArgument(name.equals(CONSTRUCTOR) || SourceVersion.isName(name),
           "not a valid name: %s", name);
       this.name = name;
-      this.returnType = name.equals(CONSTRUCTOR) ? null : TypeName.VOID;
+      this.returnType = name.equals(CONSTRUCTOR) ? null : TYPE_NAME_STATIC_ADAPTER.getVoid();
       return this;
     }
 
@@ -331,20 +344,15 @@ public final class MethodSpec {
 
     public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
       checkArgument(annotationSpecs != null, "annotationSpecs == null");
-      for (AnnotationSpec annotationSpec : annotationSpecs) {
-        this.annotations.add(annotationSpec);
-      }
-      return this;
+      return super.addAnnotations(annotationSpecs);
     }
 
     public Builder addAnnotation(AnnotationSpec annotationSpec) {
-      this.annotations.add(annotationSpec);
-      return this;
+      return super.addAnnotation(annotationSpec);
     }
 
     public Builder addAnnotation(ClassName annotation) {
-      this.annotations.add(AnnotationSpec.builder(annotation).build());
-      return this;
+      return super.addAnnotation(annotation);
     }
 
     public Builder addAnnotation(Class<?> annotation) {
@@ -353,16 +361,12 @@ public final class MethodSpec {
 
     public Builder addModifiers(Modifier... modifiers) {
       checkNotNull(modifiers, "modifiers == null");
-      Collections.addAll(this.modifiers, modifiers);
-      return this;
+      return super.addModifiers(modifiers);
     }
 
     public Builder addModifiers(Iterable<Modifier> modifiers) {
       checkNotNull(modifiers, "modifiers == null");
-      for (Modifier modifier : modifiers) {
-        this.modifiers.add(modifier);
-      }
-      return this;
+      return super.addModifiers(modifiers);
     }
 
     public Builder addTypeVariables(Iterable<TypeVariableName> typeVariables) {
@@ -378,14 +382,14 @@ public final class MethodSpec {
       return this;
     }
 
-    public Builder returns(TypeName returnType) {
+    public Builder returns(TypeNameProvider returnType) {
       checkState(!name.equals(CONSTRUCTOR), "constructor cannot have return type.");
       this.returnType = returnType;
       return this;
     }
 
     public Builder returns(Type returnType) {
-      return returns(TypeName.get(returnType));
+      return returns(TYPE_NAME_STATIC_ADAPTER.get(returnType));
     }
 
     public Builder addParameters(Iterable<ParameterSpec> parameterSpecs) {
@@ -401,13 +405,14 @@ public final class MethodSpec {
       return this;
     }
 
-    public Builder addParameter(TypeName type, String name, Modifier... modifiers) {
-      return addParameter(ParameterSpec.builder(type, name, modifiers).build());
+    public Builder addParameter(TypeNameProvider type, String name, Modifier... modifiers) {
+      return addParameter(ParameterSpec.builder(TYPE_NAME_STATIC_ADAPTER.toTypeName(type), name, modifiers).build());
     }
 
     public Builder addParameter(Type type, String name, Modifier... modifiers) {
-      return addParameter(TypeName.get(type), name, modifiers);
+      return addParameter(TYPE_NAME_STATIC_ADAPTER.get(type), name, modifiers);
     }
+
 
     public Builder varargs() {
       return varargs(true);
@@ -418,21 +423,21 @@ public final class MethodSpec {
       return this;
     }
 
-    public Builder addExceptions(Iterable<? extends TypeName> exceptions) {
+    public Builder addExceptions(Iterable<? extends TypeNameProvider> exceptions) {
       checkArgument(exceptions != null, "exceptions == null");
-      for (TypeName exception : exceptions) {
+      for (TypeNameProvider exception : exceptions) {
         this.exceptions.add(exception);
       }
       return this;
     }
 
-    public Builder addException(TypeName exception) {
+    public Builder addException(TypeNameProvider exception) {
       this.exceptions.add(exception);
       return this;
     }
 
     public Builder addException(Type exception) {
-      return addException(TypeName.get(exception));
+      return addException(TYPE_NAME_STATIC_ADAPTER.get(exception));
     }
 
     public Builder addCode(String format, Object... args) {
