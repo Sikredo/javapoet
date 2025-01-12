@@ -140,21 +140,10 @@ public final class ParameterSpec {
   public static final class Builder extends AbstractSpecBuilder<Builder, ParameterSpec> {
     private final TypeNameProvider type;
     private final String name;
-    private final CodeBlock.Builder javadoc = CodeBlock.builder();
 
     private Builder(TypeNameProvider type, String name) {
       this.type = type;
       this.name = name;
-    }
-
-    public Builder addJavadoc(String format, Object... args) {
-      javadoc.add(format, args);
-      return this;
-    }
-
-    public Builder addJavadoc(CodeBlock block) {
-      javadoc.add(block);
-      return this;
     }
 
     public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {

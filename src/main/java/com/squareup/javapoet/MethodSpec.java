@@ -309,7 +309,6 @@ public final class MethodSpec {
   public static final class Builder extends AbstractSpecBuilder<Builder, MethodSpec> {
     private String name;
 
-    private final CodeBlock.Builder javadoc = CodeBlock.builder();
     private TypeNameProvider returnType;
     private final Set<TypeNameProvider> exceptions = new LinkedHashSet<>();
     private final CodeBlock.Builder code = CodeBlock.builder();
@@ -329,16 +328,6 @@ public final class MethodSpec {
           "not a valid name: %s", name);
       this.name = name;
       this.returnType = name.equals(CONSTRUCTOR) ? null : TYPE_NAME_STATIC_ADAPTER.getVoid();
-      return this;
-    }
-
-    public Builder addJavadoc(String format, Object... args) {
-      javadoc.add(format, args);
-      return this;
-    }
-
-    public Builder addJavadoc(CodeBlock block) {
-      javadoc.add(block);
       return this;
     }
 

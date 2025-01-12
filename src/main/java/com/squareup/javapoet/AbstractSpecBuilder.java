@@ -9,10 +9,21 @@ import javax.lang.model.element.Modifier;
 public abstract class AbstractSpecBuilder<T extends AbstractSpecBuilder<T, R>, R> {
     protected final List<AnnotationSpec> annotations = new ArrayList<>();
     protected final List<Modifier> modifiers = new ArrayList<>();
+    protected final CodeBlock.Builder javadoc = CodeBlock.builder();
 
     @SuppressWarnings("unchecked")
     private T self() {
         return (T) this;
+    }
+
+    public T addJavadoc(String format, Object... args) {
+        javadoc.add(format, args);
+        return self();
+    }
+
+    public T addJavadoc(CodeBlock block) {
+        javadoc.add(block);
+        return self();
     }
 
     public T addAnnotation(AnnotationSpec annotationSpec) {

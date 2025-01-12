@@ -418,7 +418,6 @@ public final class TypeSpec {
     private final String name;
     private final CodeBlock anonymousTypeArguments;
 
-    private final CodeBlock.Builder javadoc = CodeBlock.builder();
     private TypeName superclass = ClassName.OBJECT;
     private final CodeBlock.Builder staticBlock = CodeBlock.builder();
     private final CodeBlock.Builder initializerBlock = CodeBlock.builder();
@@ -440,16 +439,6 @@ public final class TypeSpec {
       this.kind = kind;
       this.name = name;
       this.anonymousTypeArguments = anonymousTypeArguments;
-    }
-
-    public Builder addJavadoc(String format, Object... args) {
-      javadoc.add(format, args);
-      return this;
-    }
-
-    public Builder addJavadoc(CodeBlock block) {
-      javadoc.add(block);
-      return this;
     }
 
     public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
